@@ -346,10 +346,9 @@ func NewByeRequestUAC(inviteRequest *Request, inviteResponse *Response, body []b
 	if len(inviteRequest.GetHeaders("Route")) > 0 {
 		CopyHeaders("Route", inviteRequest, byeRequest)
 	} else {
-		hdrs := inviteResponse.GetHeaders("Record-Route")
-		for i := len(hdrs) - 1; i >= 0; i-- {
-			h := hdrs[i].headerClone()
-			byeRequest.AppendHeader(h)
+		recordRoute := inviteResponse.RecordRoute()
+		if recordRoute != nil {
+			byeRequest.AppendHeader(&RouteHeader{Address: recordRoute.Address})
 		}
 	}
 

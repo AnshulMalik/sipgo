@@ -6,6 +6,17 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestParseAddressValueWithLR(t *testing.T) {
+	address := "<sip:abc@127.0.0.1:5060;lr>"
+	uri := Uri{
+		Headers: HeaderParams{},
+	}
+	params := NewParams()
+
+	_, err := ParseAddressValue(address, &uri, params)
+	assert.Nil(t, err)
+}
+
 func TestParseAddressValue(t *testing.T) {
 	address := "\"Bob\" <sips:bob:password@127.0.0.1:5060;user=phone>;tag=1234"
 
