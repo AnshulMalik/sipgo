@@ -23,6 +23,8 @@ func (tx *ServerTx) inviteStateProcceeding(s fsmInput) fsmInput {
 		tx.fsmState, spinfn = tx.inviteStateCompleted, tx.actRespondComplete
 	case server_input_transport_err:
 		tx.fsmState, spinfn = tx.inviteStateTerminated, tx.actTransErr
+	default:
+		return FsmInputNone
 	}
 
 	return spinfn()
