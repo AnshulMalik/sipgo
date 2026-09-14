@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -417,28 +418,91 @@ func (l *TransportLayer) resolveAddr(ctx context.Context, network string, host s
 
 	l.log.Debug().Str("host", host).Msg("DNS Resolving")
 	// We need to try local resolving.
-	ip, err := net.ResolveIPAddr("ip", host)
-	if err == nil {
-		addr.IP = ip.IP
+	if err := l.resolveAddrIP(ctx, host, addr); err == nil {
 		return nil
+	} else {
+		l.log.Debug().Err(err).Msg("IP addr resolving failed, doing via dns resolver")
 	}
-	log.Debug().Err(err).Msg("IP addr resolving failed, doing via dns resolver")
 
-	var lookupnet string
+	return l.resolveAddrSRV(ctx, network, host, addr)
+}
+
+// resolveAddrIP resolves a hostname to an address record. A literal IP is
+// returned as-is by the resolver, so it needs no special case.
+func (l *TransportLayer) resolveAddrIP(ctx context.Context, host string, addr *Addr) error {
+	ips, err := l.dnsResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return err
+	}
+	if len(ips) == 0 {
+		// A NODATA answer normally surfaces as an error, so this is defensive.
+		return fmt.Errorf("no addresses for %q", host)
+	}
+
+	// Prefer IPv4. A v6 answer picked on a v4-only host is a dial that can only
+	// fail, and SIP deployments are still predominantly v4.
+	for _, ip := range ips {
+		if ip.IP.To4() != nil {
+			addr.IP = ip.IP
+			return nil
+		}
+	}
+
+	addr.IP = ips[0].IP
+	return nil
+}
+
+// resolveAddrSRV resolves a host that has no address record of its own through
+// its SRV records, per RFC 3263 section 4.
+//
+// The SRV target is a hostname and must itself be resolved to an address; it is
+// never an IP literal. Skipping that second lookup leaves a nil IP behind,
+// which Addr.String renders as ":<port>" -- an address net.Dial resolves to the
+// local host, so the caller ends up dialing itself instead of the target.
+func (l *TransportLayer) resolveAddrSRV(ctx context.Context, network string, host string, addr *Addr) error {
+	// RFC 3263 section 4.1 maps the transport onto a service and protocol
+	// label. TLS is carried over TCP, so secure SIP is _sips._tcp -- there is
+	// no _tls protocol label. RFC 7118 section 3.1 covers the WebSocket
+	// transports.
+	service, proto := "sip", "tcp"
 	switch network {
 	case "udp":
-		lookupnet = "udp"
-	default:
-		lookupnet = "tcp"
+		proto = "udp"
+	case "tls":
+		service = "sips"
+	case "ws":
+		proto = "ws"
+	case "wss":
+		service, proto = "sips", "wss"
 	}
 
-	_, addrs, err := l.dnsResolver.LookupSRV(ctx, "sip", lookupnet, host)
+	l.log.Debug().Str("service", service).Str("proto", proto).Str("host", host).Msg("SRV Resolving")
+
+	_, records, err := l.dnsResolver.LookupSRV(ctx, service, proto, host)
 	if err != nil {
 		return fmt.Errorf("fail to resolve target for %q: %w", host, err)
 	}
-	a := addrs[0]
-	addr.IP = net.ParseIP(a.Target[:len(a.Target)-1])
-	addr.Port = int(a.Port)
+	if len(records) == 0 {
+		return fmt.Errorf("no SRV records for _%s._%s.%s", service, proto, host)
+	}
+
+	// LookupSRV sorts by priority and randomises by weight within a priority,
+	// so the first record is the one to use.
+	record := records[0]
+	target := strings.TrimSuffix(record.Target, ".")
+
+	// RFC 2782: a single "." target means the service is decidedly unavailable.
+	if target == "" {
+		return fmt.Errorf("service _%s._%s.%s is not available", service, proto, host)
+	}
+
+	targetAddr := Addr{}
+	if err := l.resolveAddrIP(ctx, target, &targetAddr); err != nil {
+		return fmt.Errorf("resolve SRV target %q: %w", target, err)
+	}
+
+	addr.IP = targetAddr.IP
+	addr.Port = int(record.Port)
 	return nil
 }
 
