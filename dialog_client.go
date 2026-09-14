@@ -338,6 +338,6 @@ func digestTransactionRequest(ctx context.Context, client *Client, req *sip.Requ
 	// defer req.RemoveHeader("Authorization")
 
 	req.RemoveHeader("Via")
-	tx, err := client.TransactionRequest(context.TODO(), req, ClientRequestAddVia)
+	tx, err := client.TransactionRequest(ctx, req, ClientRequestAddVia)
 	return tx, err
 }
