@@ -470,10 +470,6 @@ func (l *TransportLayer) resolveAddrSRV(ctx context.Context, network string, hos
 		proto = "udp"
 	case "tls":
 		service = "sips"
-	case "ws":
-		proto = "ws"
-	case "wss":
-		service, proto = "sips", "wss"
 	}
 
 	l.log.Debug().Str("service", service).Str("proto", proto).Str("host", host).Msg("SRV Resolving")
