@@ -223,15 +223,7 @@ func NewAckRequest(inviteRequest *Request, inviteResponse *Response, body []byte
 	)
 	ackRequest.SipVersion = inviteRequest.SipVersion
 
-	if len(inviteRequest.GetHeaders("Route")) > 0 {
-		CopyHeaders("Route", inviteRequest, ackRequest)
-	} else {
-		hdrs := inviteResponse.GetHeaders("Record-Route")
-		for i := len(hdrs) - 1; i >= 0; i-- {
-			h := hdrs[i].headerClone()
-			ackRequest.AppendHeader(h)
-		}
-	}
+	appendDialogRoutes(ackRequest, inviteRequest, inviteResponse)
 
 	maxForwardsHeader := MaxForwardsHeader(70)
 	ackRequest.AppendHeader(&maxForwardsHeader)
@@ -277,8 +269,59 @@ func NewAckRequest(inviteRequest *Request, inviteResponse *Response, body []byte
 	return ackRequest
 }
 
+// appendDialogRoutes adds the UAC dialog route set to an in-dialog request.
+// The route set is the Record-Route entries of the dialog-establishing
+// response in reverse order, sent as Route headers (RFC 3261 12.1.2, 12.2.1.1).
+// Without Record-Route it falls back to the INVITE's own Route headers.
+func appendDialogRoutes(req *Request, inviteRequest *Request, inviteResponse *Response) {
+	var hops []string
+	for _, h := range inviteResponse.GetHeaders("Record-Route") {
+		hops = append(hops, splitAddressList(h.Value())...)
+	}
+	if len(hops) == 0 {
+		CopyHeaders("Route", inviteRequest, req)
+		return
+	}
+	for i := len(hops) - 1; i >= 0; i-- {
+		req.AppendHeader(NewHeader("Route", hops[i]))
+	}
+}
+
+// splitAddressList splits a comma separated header value such as
+// "<sip:a;lr>, <sip:b;lr>" into its entries, ignoring commas inside <> or quotes.
+func splitAddressList(v string) []string {
+	var out []string
+	inBrackets, inQuotes, start := false, false, 0
+	for i, c := range v {
+		switch {
+		case c == '"':
+			inQuotes = !inQuotes
+		case inQuotes:
+		case c == '<':
+			inBrackets = true
+		case c == '>':
+			inBrackets = false
+		case c == ',' && !inBrackets:
+			if s := strings.TrimSpace(v[start:i]); s != "" {
+				out = append(out, s)
+			}
+			start = i + 1
+		}
+	}
+	if s := strings.TrimSpace(v[start:]); s != "" {
+		out = append(out, s)
+	}
+	return out
+}
+
 func newAckRequestNon2xx(inviteRequest *Request, inviteResponse *Response, body []byte) *Request {
 	ackRequest := NewAckRequest(inviteRequest, inviteResponse, body)
+
+	// ACK for a non-2xx is part of the INVITE transaction and must carry the
+	// INVITE's Route headers, not a dialog route set (RFC 3261 17.1.1.3).
+	for ackRequest.RemoveHeader("Route") {
+	}
+	CopyHeaders("Route", inviteRequest, ackRequest)
 
 	CopyHeaders("Via", inviteRequest, ackRequest)
 	if inviteResponse.IsSuccess() {
@@ -343,14 +386,7 @@ func NewByeRequestUAC(inviteRequest *Request, inviteResponse *Response, body []b
 	)
 	byeRequest.SipVersion = inviteRequest.SipVersion
 
-	if len(inviteRequest.GetHeaders("Route")) > 0 {
-		CopyHeaders("Route", inviteRequest, byeRequest)
-	} else {
-		recordRoute := inviteResponse.RecordRoute()
-		if recordRoute != nil {
-			byeRequest.AppendHeader(&RouteHeader{Address: recordRoute.Address})
-		}
-	}
+	appendDialogRoutes(byeRequest, inviteRequest, inviteResponse)
 
 	maxForwardsHeader := MaxForwardsHeader(70)
 	byeRequest.AppendHeader(&maxForwardsHeader)
